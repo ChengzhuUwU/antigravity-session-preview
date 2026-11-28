@@ -4,6 +4,16 @@ All notable changes to **Antigravity Session Preview (`agy-session-preview`)** w
 
 ## [Unreleased]
 
+### Added
+- **Saved turns**: `收藏` / `Save`, to the left of `复制提问` / `Copy prompt`, stores that turn’s full interaction, including tool calls, under the preview data directory (`saved-turns/`). The same button on a `/btw` card stores that side question, its answer, and the fork’s tool calls when that transcript is still on disk. The top-left source menu gains `Saved Turns` for reading them back. Saving tells you to open that menu.
+
+### Changed
+- **Collapse projects & sessions**: `折叠项目&会话` folds every project folder and hides sessions older than 3 days inside them. `展开项目` opens the folders again and leaves those older sessions collapsed.
+- **Tables: Fit column widths**: Fit now sizes each column from its own text. One long cell wraps instead of setting the column, leftover pane width goes to columns that are still wrapping, and a cell that still runs past five lines can be expanded. `Tables: Expand` is unchanged, including the `30vw` column cap.
+
+### Fixed
+- **Stale project unread dot**: Opening a session, or watching it while it runs, keeps that step count as read. A run that then stops without new steps no longer lights the project again. The project dot follows sessions you can already see. A collapsed subagent or a session behind "older" keeps its own dot instead of leaving the project highlighted after those visible sessions are read.
+
 ## [0.4.2] - 2026-11-28
 
 ### Added
