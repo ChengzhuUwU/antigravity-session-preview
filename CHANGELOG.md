@@ -4,6 +4,8 @@ All notable changes to **Antigravity Session Preview (`agy-session-preview`)** w
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-11-29
+
 ### Added
 - **Saved turns**: `收藏` / `Save`, to the left of `复制提问` / `Copy prompt`, stores that turn’s full interaction, including tool calls, under the preview data directory (`saved-turns/`). The same button on a `/btw` card stores that side question, its answer, and the fork’s tool calls when that transcript is still on disk. The top-left source menu gains `Saved Turns` for reading them back. Saving tells you to open that menu.
 
