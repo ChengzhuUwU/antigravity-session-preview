@@ -98,6 +98,9 @@ agy-preview --status
 agy-preview --restart
 agy-preview --stop
 
+# Replace the installed plugin with the latest GitHub release (user data stays put)
+agy-preview update
+
 # Manage optional frontend password (for remote servers, disabled by default)
 agy-preview password set <PASSWORD>
 agy-preview password print

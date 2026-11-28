@@ -14,7 +14,7 @@ This document provides complete architectural context, user UX contracts, platfo
 | Component | Path / Value | Notes |
 |---|---|---|
 | **Source Repository** | `E:\OpenSources2\agy_plugin\antigravity-markdown-preview` | Primary git working tree (`main` branch) |
-| **Installed Global Plugin** | `C:\Users\24017\.gemini\config\plugins\agy-session-preview` | Synced via `npm run install-plugin` ([scripts/install-plugin.mjs](scripts/install-plugin.mjs); removes legacy `agy-markdown-preview` install) |
+| **Installed Global Plugin** | `C:\Users\24017\.gemini\config\plugins\agy-session-preview` | Synced via `npm run install-plugin` ([scripts/install-plugin.mjs](scripts/install-plugin.mjs); removes legacy `agy-markdown-preview` install). End users update with `agy-preview update` / `agy-preview --update`, which downloads the latest GitHub release and does not touch the user data directory |
 | **Global CLI Shim** | `C:\Users\24017\.local\bin\agy-preview.cmd` | Invokes installed `bin/agy-preview.mjs` from any terminal |
 | **Runtime Lock & Logs** | `C:\Users\24017\.gemini\cache\agy-session-preview\` | Ephemeral `server.json` (`{ pid, port, startedAt }`) & `server.log` |
 | **Persistent User Data** | `%APPDATA%\agy-session-preview\` (`C:\Users\24017\AppData\Roaming\agy-session-preview`) | `docs-store.json`, `clips\*.txt`, `btw-notes.json`, and `saved-turns\` (a saved conversation turn, including tool calls; macOS: `~/Library/Application Support/...`, Linux: `~/.local/share/...`) |

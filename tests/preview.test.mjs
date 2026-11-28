@@ -32,6 +32,12 @@ import {
 } from '../server/file-picker.mjs';
 import { createSidebarOrder, noteSidebarRoster, sortGroupsBySidebarOrder } from '../public/js/sidebar-order.js';
 import { SavedTurnStore } from '../server/saved-turns.mjs';
+import {
+  compareVersions,
+  decideUpdate,
+  runPluginUpdate,
+  tagArchiveUrl,
+} from '../server/plugin-update.mjs';
 import { defaultHeuristicMeasureText, optimizeTableColumnWidths } from '../public/js/table-layout.js';
 import { folderShowsUnread, nextConversationReadState } from '../public/js/read-state.js';
 import {
@@ -1780,6 +1786,64 @@ test('uniform table columns stay near each other instead of collapsing to the mi
     assert.ok(width < natural[index] * 1.45, `column ${index} stretched to ${width}, natural ${natural[index].toFixed(1)}`);
   });
   assert.equal(layout.outlierCells.length, 0);
+});
+
+test('agy-preview update installs a newer release and leaves unrelated files out', async () => {
+  assert.equal(compareVersions('0.4.2', '0.4.3'), -1);
+  assert.equal(compareVersions('v0.4.3', '0.4.3'), 0);
+  assert.equal(decideUpdate('0.4.2', '0.4.3'), 'upgrade');
+  assert.equal(decideUpdate('0.4.3', '0.4.3'), 'current');
+  assert.equal(decideUpdate('0.4.4', '0.4.3'), 'ahead');
+  assert.match(tagArchiveUrl('v0.4.3'), /\/archive\/refs\/tags\/v0\.4\.3\.tar\.gz$/);
+
+  const root = mkdtempSync(join(tmpdir(), 'agy-update-'));
+  const srcParent = join(root, 'src-parent');
+  const src = join(srcParent, 'antigravity-session-preview-9.9.9');
+  const install = join(root, 'install');
+  const binDir = join(root, 'bin');
+  const archive = join(root, 'release.tar.gz');
+  try {
+    mkdirSync(join(src, 'scripts'), { recursive: true });
+    mkdirSync(join(src, 'public', 'js'), { recursive: true });
+    mkdirSync(join(src, 'tests'), { recursive: true });
+    writeFileSync(join(src, 'plugin.json'), JSON.stringify({ version: '9.9.9' }));
+    writeFileSync(join(src, 'scripts', 'hook-sync.mjs'), 'export const hook = true;\n');
+    writeFileSync(join(src, 'public', 'js', 'app.js'), 'export const fresh = true;\n');
+    writeFileSync(join(src, 'tests', 'secret.txt'), 'do not install');
+    mkdirSync(join(install, 'public', 'js'), { recursive: true });
+    writeFileSync(join(install, 'plugin.json'), JSON.stringify({ version: '0.1.0' }));
+    writeFileSync(join(install, 'public', 'js', 'stale.js'), 'old');
+    execFileSync('tar', ['-czf', archive, '-C', srcParent, 'antigravity-session-preview-9.9.9']);
+    const bytes = readFileSync(archive);
+    const result = await runPluginUpdate({
+      installRoot: install,
+      binDir,
+      fetchImpl: async (url) => {
+        if (String(url).includes('api.github.com')) {
+          return { ok: true, status: 200, json: async () => ({ tag_name: 'v9.9.9' }) };
+        }
+        return { ok: true, status: 200, arrayBuffer: async () => bytes };
+      },
+    });
+    assert.equal(result.action, 'upgrade');
+    assert.equal(result.localVersion, '0.1.0');
+    assert.equal(result.remoteVersion, '9.9.9');
+    assert.match(readFileSync(join(install, 'plugin.json'), 'utf-8'), /9\.9\.9/);
+    assert.match(readFileSync(join(install, 'public', 'js', 'app.js'), 'utf-8'), /fresh/);
+    assert.equal(existsSync(join(install, 'scripts', 'hook-sync.mjs')), true);
+    assert.equal(existsSync(join(install, 'public', 'js', 'stale.js')), false);
+    assert.equal(existsSync(join(install, 'tests', 'secret.txt')), false);
+    assert.equal(existsSync(join(binDir, 'agy-preview')), true);
+
+    const same = await runPluginUpdate({
+      installRoot: install,
+      binDir,
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ tag_name: 'v9.9.9' }) }),
+    });
+    assert.equal(same.action, 'current');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('a saved /btw keeps the question, answer, and fork id', () => {

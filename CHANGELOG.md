@@ -4,6 +4,9 @@ All notable changes to **Antigravity Session Preview (`agy-session-preview`)** w
 
 ## [Unreleased]
 
+### Added
+- **`agy-preview update`**: Downloads the latest GitHub release and replaces the installed plugin. `agy-preview --update` does the same. A running preview server is restarted. Notes, clips, and saved turns in the user data directory are left in place.
+
 ## [0.4.3] - 2026-11-29
 
 ### Added

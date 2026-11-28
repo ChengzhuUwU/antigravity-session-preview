@@ -36,6 +36,10 @@ If the user invokes `/preview password ...` (or asks in natural language to **se
   agy-preview password print
   ```
 
+## Step 2b: Update the installed plugin
+
+If the user asks to update Session Preview, run `agy-preview update` (or `agy-preview --update`). It downloads the latest GitHub release into `~/.gemini/config/plugins/agy-session-preview` and restarts a running preview server. Do not clone the repository or re-run `npm run install-plugin` for this.
+
 ## Step 3: Launch or Focus via `agy-preview`
 
 1. First check `agy-preview --status`.

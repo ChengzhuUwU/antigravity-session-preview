@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PreviewAuthManager } from '../server/auth.mjs';
+import { defaultInstallRoot, runPluginUpdate } from '../server/plugin-update.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(HERE, '..');
@@ -39,6 +40,7 @@ Options:
       --status                 Show running background preview server status
       --restart                Restart the background preview server in place
       --stop                   Stop the background preview server
+      update, --update         Download the latest GitHub release and replace the installed plugin
 
 Password Security (for remote / shared servers, disabled by default):
       --set-password <pwd>     Set and immediately activate frontend password protection
@@ -66,12 +68,18 @@ function parseArgs(argv) {
     restart: false,
     stop: false,
     status: false,
+    update: false,
     stdin: false,
     help: false,
     port: 0,
     passwordCmd: '',
     passwordVal: '',
   };
+
+  if (argv[0] === 'update') {
+    opts.update = true;
+    return opts;
+  }
 
   if (argv[0] === 'password' || argv[0] === 'auth') {
     const sub = (argv[1] || 'print').toLowerCase();
@@ -120,6 +128,7 @@ function parseArgs(argv) {
     else if (a === '--restart') opts.restart = true;
     else if (a === '--stop') opts.stop = true;
     else if (a === '--status') opts.status = true;
+    else if (a === '--update') opts.update = true;
     else if (a === '--stdin') {
       opts.stdin = true;
       opts.explicitTarget = true;
@@ -428,11 +437,87 @@ async function handlePasswordCommand(opts, authManager) {
   }
 }
 
+async function stopRunningServer() {
+  const running = await getRunningServer();
+  if (running?.pid) {
+    try { process.kill(running.pid); } catch {}
+  }
+  for (const lockFile of [SERVER_JSON, LEGACY_SERVER_JSON]) {
+    if (existsSync(lockFile)) rmSync(lockFile, { force: true });
+  }
+  if (running) await new Promise((r) => setTimeout(r, 200));
+  return running;
+}
+
+async function startInstalledServer(installRoot, port, host) {
+  const entry = join(installRoot, 'server', 'app.mjs');
+  const bindHost = host || '127.0.0.1';
+  const targetPort = port || DEFAULT_PORT;
+  mkdirSync(RUNTIME_DIR, { recursive: true });
+  const logFd = openSync(SERVER_LOG, 'a');
+  const child = spawn(process.execPath, [entry, '--port', String(targetPort), '--host', bindHost], {
+    cwd: installRoot,
+    detached: true,
+    windowsHide: true,
+    stdio: ['ignore', logFd, logFd],
+  });
+  child.unref();
+  closeSync(logFd);
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    try {
+      const res = await httpJson(targetPort, '/api/health', 'GET', null, 400);
+      if (res.status === 200 && res.data?.ok) {
+        const info = { pid: child.pid, port: targetPort, host: bindHost, startedAt: new Date().toISOString() };
+        writeFileSync(SERVER_JSON, JSON.stringify(info, null, 2), 'utf-8');
+        return info;
+      }
+    } catch {
+      await new Promise((r) => setTimeout(r, 80));
+    }
+  }
+  throw new Error(`Updated files are in place, but the preview server did not restart on port ${targetPort}`);
+}
+
+async function handleUpdate() {
+  const installRoot = defaultInstallRoot();
+  let previous = null;
+  const result = await runPluginUpdate({
+    installRoot,
+    onProgress: (message) => console.log(message),
+    beforeReplace: async () => {
+      previous = await stopRunningServer();
+    },
+    afterReplace: async () => {
+      if (!previous) return;
+      await startInstalledServer(installRoot, previous.port, previous.host);
+    },
+  });
+  if (result.action === 'current') {
+    console.log(`Session Preview ${result.localVersion} is already the latest release.`);
+    return;
+  }
+  if (result.action === 'ahead') {
+    console.log(`Installed Session Preview ${result.localVersion} is newer than the latest release ${result.tag}. Nothing was changed.`);
+    return;
+  }
+  const from = result.localVersion || 'not installed';
+  console.log(`Session Preview ${from} → ${result.remoteVersion}`);
+  console.log(`Installed to ${result.installRoot}`);
+  if (previous) console.log('Restarted the preview server. Refresh the window if it did not reload.');
+  else console.log('Run agy-preview to open the updated preview.');
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
 
   if (opts.help) {
     printHelp();
+    return;
+  }
+
+  if (opts.update) {
+    await handleUpdate();
     return;
   }
 
