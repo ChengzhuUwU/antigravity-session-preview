@@ -1,6 +1,6 @@
 {
   "name": "antigravity-session-preview",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "private": true,
   "type": "module",
   "description": "Lightweight real-time Session, Markdown, PDF & Office previewer plugin for Antigravity CLI and Antigravity 2.0 with 2x8 + multi-candidate Custom RGB themes.",

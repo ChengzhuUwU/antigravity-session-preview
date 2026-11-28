@@ -1,7 +1,7 @@
 # HANDOFF — Antigravity Session Preview (`agy-session-preview`)
 
 > **Last Updated**: 2026-11-29
-> **Current Version**: `v0.4.3`
+> **Current Version**: `v0.4.4`
 > **Repository**: `E:\OpenSources2\agy_plugin\antigravity-markdown-preview`
 > **Remote**: `git@github.com:ChengzhuUwU/antigravity-session-preview.git` (`https://github.com/ChengzhuUwU/antigravity-session-preview`)
 
@@ -25,6 +25,7 @@ This document provides complete architectural context, user UX contracts, platfo
 
 | Date | Tag / Version | Commit | Highlights |
 |---|---|---|---|
+| 2026-11-29 | `v0.4.4` | `v0.4.4` | `agy-preview update` / `--update` downloads the latest GitHub release, replaces the installed plugin, and restarts a running preview server without touching notes, clips, or saved turns |
 | 2026-11-29 | `v0.4.3` | `v0.4.3` | Save a full turn or `/btw` exchange and reopen it from `Saved Turns`; Fit columns wrap a long cell instead of adopting its width; `折叠项目&会话` also hides sessions older than three days; the project unread dot follows only the sessions already on screen |
 | 2026-11-28 | `v0.4.2` | `v0.4.2` | OS-native file dialog with a Linux fallback chain; sidebar project/session order frozen for the open window; Markdown `Rendered` / `Source` toggle that keeps the viewport center; lone `~` is not strikethrough; transcript cache drops a rewritten head (`/rewind`); `Tables: Expand` column cap is `30vw`; per-turn copy and long-prompt fold; per-conversation file sidebar and tools; `/schedule` wakeups as their own turns |
 | 2026-11-27 | unreleased | `d9de923` | `/schedule` wakeups render as their own turns (`定时巡检 #N` on the card and in the Outline); user-turn indexes still count only user messages |
