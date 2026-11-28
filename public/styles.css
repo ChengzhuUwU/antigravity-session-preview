@@ -506,6 +506,13 @@ html, body {
   color: var(--accent);
 }
 
+.show-older-sessions-btn.has-unread {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-main);
+}
+
 .session-item {
   flex-shrink: 0;
   text-align: left;
@@ -879,8 +886,10 @@ html, body {
 .user-card-tools {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  flex-shrink: 0;
+  flex-shrink: 1;
+  flex-wrap: wrap;
 }
 
 .user-card-time {
@@ -1615,6 +1624,33 @@ html[data-tables="expand"] .table-card:not(.force-compact) td,
   overflow-wrap: break-word;
 }
 
+.table-card.cols-optimized table {
+  width: var(--table-opt-width, 100%);
+  max-width: none;
+  table-layout: fixed;
+}
+
+.table-card.cols-optimized th,
+.table-card.cols-optimized td {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: none;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+
+.table-card.cols-optimized .cell-fold.is-clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  overflow: hidden;
+}
+
+.table-card.cols-optimized .cell-fold-btn {
+  margin-top: 4px;
+}
+
 .assistant-markdown th,
 .assistant-markdown td {
   padding: 8px 12px;
@@ -2144,6 +2180,10 @@ mark.find-hit.current {
 
 .subagent-group-toggle:hover {
   background: var(--bg-subtle);
+  color: var(--text-main);
+}
+
+.subagent-group-toggle.has-unread {
   color: var(--text-main);
 }
 
@@ -3265,6 +3305,17 @@ html[data-theme="dark"] .pinned-folder > .project-folder-header .project-folder-
   opacity: 1 !important;
   color: #e29b21;
   transform: scale(1.15);
+}
+
+.saved-turn-remove {
+  opacity: 0.55;
+}
+
+.session-item:hover .saved-turn-remove,
+.saved-turn-remove:hover {
+  opacity: 1;
+  color: var(--text-main);
+  transform: none;
 }
 
 /* Live Steps Checklist Card (update_steps) */

@@ -35,7 +35,7 @@
           <select id="flavor-select" class="select-sm" style="flex:1;min-width:0;" data-i18n-title="flavorTip" title="Antigravity Product Flavor">
             <option value="antigravity-cli">antigravity-cli</option>
           </select>
-          <button id="toggle-all-projects-btn" class="pill-btn" type="button" data-i18n="collapseProjectsBtn" data-i18n-title="collapseProjectsTip" title="Collapse or expand all project folders">⊟ Collapse</button>
+          <button id="toggle-all-projects-btn" class="pill-btn" type="button" data-i18n="collapseProjectsBtn" data-i18n-title="collapseProjectsTip" title="Collapse every project folder and hide sessions older than 3 days. Click again to expand the project folders.">⊟ Collapse all</button>
         </div>
 
         <!-- Docs/Clips-only Toolbar (Browse File + Manage Mode) -->
@@ -285,7 +285,7 @@
         document.body.appendChild(s);
         return;
       }
-      const files = ['js/i18n.js', 'js/markdown.js', 'js/doc-viewers.js', 'js/transcript-view.js', 'js/sidebar-order.js', 'js/app.js'];
+      const files = ['js/i18n.js', 'js/table-layout.js', 'js/markdown.js', 'js/doc-viewers.js', 'js/transcript-view.js', 'js/sidebar-order.js', 'js/read-state.js', 'js/app.js'];
       const sources = {};
       await Promise.all(files.map(async (f) => {
         const res = await fetch('/' + f);

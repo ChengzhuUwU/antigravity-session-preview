@@ -31,6 +31,9 @@ import {
   runNativeFilePicker,
 } from '../server/file-picker.mjs';
 import { createSidebarOrder, noteSidebarRoster, sortGroupsBySidebarOrder } from '../public/js/sidebar-order.js';
+import { SavedTurnStore } from '../server/saved-turns.mjs';
+import { defaultHeuristicMeasureText, optimizeTableColumnWidths } from '../public/js/table-layout.js';
+import { folderShowsUnread, nextConversationReadState } from '../public/js/read-state.js';
 import {
   classifyHref,
   computeAdaptiveInlineMermaidSize,
@@ -43,7 +46,7 @@ import {
   outlineLeadLabel,
   renderMarkdownHtml,
 } from '../public/js/markdown.js';
-import { formatPromptPlainText, formatResponsePlainText, formatTurnPlainText, isLongUserPrompt } from '../public/js/transcript-view.js';
+import { buildBtwSavedTurn, btwForkConversationId, formatPromptPlainText, formatResponsePlainText, formatTurnPlainText, isLongUserPrompt } from '../public/js/transcript-view.js';
 import { execFileSync } from 'node:child_process';
 
 test('unquoteToolArg and normalizeToolArgs handle JSON-quoted and plain strings', () => {
@@ -1608,6 +1611,236 @@ test('sidebar order stays fixed after open and new projects insert at the top', 
 
   noteSidebarRoster([], order);
   assert.deepEqual(order.projects, ['C', 'A', 'B', 'Unassigned']);
+});
+
+test('reading a session clears it, and a finished run does not light the project again', () => {
+  const now = 1_700_000_000_000;
+  const watched = nextConversationReadState({
+    steps: 852,
+    running: true,
+    viewed: true,
+    prevSeen: 800,
+    wasUnread: true,
+    now,
+  });
+  assert.equal(watched.unread, false);
+  assert.equal(watched.seen, 852);
+  assert.equal(watched.trackRunning, true);
+
+  const stoppedAfterReading = nextConversationReadState({
+    steps: 852,
+    running: false,
+    viewed: false,
+    wasRunning: true,
+    prevSeen: watched.seen,
+    wasUnread: false,
+    now,
+  });
+  assert.equal(stoppedAfterReading.unread, false);
+  assert.equal(stoppedAfterReading.seen, 852);
+
+  const grewAfterLeaving = nextConversationReadState({
+    steps: 860,
+    running: false,
+    viewed: false,
+    wasRunning: true,
+    prevSeen: 852,
+    wasUnread: false,
+    now,
+  });
+  assert.equal(grewAfterLeaving.unread, true);
+  assert.equal(grewAfterLeaving.seen, 852);
+
+  const staleBadge = nextConversationReadState({
+    steps: 498,
+    running: false,
+    viewed: false,
+    wasRunning: false,
+    prevSeen: 498,
+    wasUnread: true,
+    now,
+  });
+  assert.equal(staleBadge.unread, false);
+
+  const fresh = nextConversationReadState({
+    steps: 12,
+    running: false,
+    viewed: false,
+    prevSeen: undefined,
+    wasUnread: false,
+    updatedAt: now - 60_000,
+    now,
+  });
+  assert.equal(fresh.unread, true);
+  assert.equal(fresh.seen, 0);
+  const freshStillUnread = nextConversationReadState({
+    steps: 12,
+    running: false,
+    viewed: false,
+    prevSeen: fresh.seen,
+    wasUnread: true,
+    updatedAt: now - 60_000,
+    now,
+  });
+  assert.equal(freshStillUnread.unread, true);
+  assert.equal(freshStillUnread.seen, 0);
+
+  const oldArrival = nextConversationReadState({
+    steps: 40,
+    running: false,
+    viewed: false,
+    prevSeen: undefined,
+    wasUnread: false,
+    updatedAt: now - 6 * 60 * 1000,
+    now,
+  });
+  assert.equal(oldArrival.unread, false);
+  assert.equal(oldArrival.seen, 40);
+});
+
+test('project highlight follows visible sessions, not hidden older ones or collapsed subagents', () => {
+  const unreadIds = new Set(['recent', 'older', 'sub']);
+  const sessions = [
+    { id: 'recent' },
+    { id: 'older' },
+    { id: 'sub' },
+  ];
+  assert.equal(folderShowsUnread(sessions, {
+    unreadIds,
+    runningIds: [],
+    activeId: '',
+    countableIds: ['recent'],
+  }), true);
+  assert.equal(folderShowsUnread(sessions, {
+    unreadIds,
+    runningIds: [],
+    activeId: 'recent',
+    countableIds: ['recent'],
+  }), false);
+  assert.equal(folderShowsUnread(sessions, {
+    unreadIds,
+    runningIds: [],
+    activeId: '',
+    countableIds: ['visible-read'],
+  }), false);
+  assert.equal(folderShowsUnread(sessions, {
+    unreadIds,
+    runningIds: ['recent'],
+    activeId: '',
+    countableIds: ['recent'],
+  }), false);
+});
+
+test('fit columns wrap one long cell instead of letting it set the column', () => {
+  const longNote = 'pick up the black bowl between the plate and the ramekin and place it on the plate';
+  const layout = optimizeTableColumnWidths([
+    [
+      { text: 'suite', isHeader: true },
+      { text: 'id', isHeader: true },
+      { text: 'instruction', isHeader: true },
+      { text: 'rate', isHeader: true },
+    ],
+    ['spatial', 'T00', longNote, '90% (9/10)'],
+    ['spatial', 'T01', 'pick up the black bowl next to the ramekin and place it on the plate', '100% (10/10)'],
+    ['spatial', 'T04', 'pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate', '60% (6/10)'],
+    ['spatial', 'T09', 'pick up the black bowl on the wooden cabinet and place it on the plate', '100% (10/10)'],
+  ], {
+    maxTableWidth: 760,
+    fontSize: 14,
+    lineHeight: 22,
+    cellHorizontalPadding: 24,
+    compactness: 0.12,
+  });
+
+  const natural = defaultHeuristicMeasureText(longNote, 14);
+  const [suite, id, instruction, rate] = layout.columnContentWidths;
+  assert.ok(layout.totalTableWidth <= 760 + 1, `table wider than pane: ${layout.totalTableWidth}`);
+  assert.equal(layout.requiresHorizontalScroll, false);
+  assert.ok(instruction < natural, `instruction ${instruction} exceeded natural ${natural}`);
+  assert.ok(instruction > 280, `instruction ${instruction} stayed too narrow`);
+  assert.ok(suite < 100 && id < 70, `short columns grew: ${layout.columnContentWidths.join(',')}`);
+  assert.ok(rate < instruction * 0.35, `rate ${rate} tracked the long instruction ${instruction}`);
+});
+
+test('uniform table columns stay near each other instead of collapsing to the minimum', () => {
+  const layout = optimizeTableColumnWidths([
+    ['alpha', 'bravo', 'charlie'],
+    ['alpha', 'bravo', 'charlie'],
+    ['alpha', 'bravo', 'charlie'],
+  ], {
+    maxTableWidth: 900,
+    fontSize: 14,
+    lineHeight: 22,
+    cellHorizontalPadding: 24,
+  });
+  const widths = layout.columnContentWidths;
+  const natural = ['alpha', 'bravo', 'charlie'].map((word) => defaultHeuristicMeasureText(word, 14));
+  widths.forEach((width, index) => {
+    assert.ok(width > natural[index] * 0.8, `column ${index} crushed to ${width}, natural ${natural[index].toFixed(1)}`);
+    assert.ok(width < natural[index] * 1.45, `column ${index} stretched to ${width}, natural ${natural[index].toFixed(1)}`);
+  });
+  assert.equal(layout.outlierCells.length, 0);
+});
+
+test('a saved /btw keeps the question, answer, and fork id', () => {
+  const turn = buildBtwSavedTurn({
+    question: 'Why did the last edit fail?',
+    answer: 'The selector missed the button.',
+    noteId: 'btw-11111111-2222-4333-8444-555555555555',
+    toolCount: 3,
+    durationText: '12s',
+    status: 'success',
+  });
+  assert.equal(turn.scheduleLabel, '/btw');
+  assert.equal(turn.user.request, 'Why did the last edit fail?');
+  assert.equal(turn.items[0].text, 'The selector missed the button.');
+  assert.equal(turn.stats.toolCount, 3);
+  assert.equal(btwForkConversationId(turn.btw.noteId), '11111111-2222-4333-8444-555555555555');
+  assert.equal(btwForkConversationId('btw-1700000000000-ab12'), '');
+});
+
+test('saved turns keep the full interaction and can be listed again', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-saved-turns-'));
+  try {
+    const store = new SavedTurnStore({ dir });
+    const summary = store.create({
+      conversationId: 'conv-1',
+      flavor: 'antigravity-cli',
+      conversationTitle: 'Poster edits',
+      projectName: 'ChengzhuUwU.github.io',
+      turn: {
+        id: 'turn-4',
+        index: 2,
+        user: { request: 'Fix the poster spacing', mentions: [], metadataBlocks: [] },
+        items: [
+          { kind: 'thinking', text: 'Looking at the layout.' },
+          {
+            kind: 'tool_group',
+            tools: [{ name: 'view_file', args: { Path: 'poster.html' }, outputPreview: { text: '<main>', truncated: false, totalLength: 6 } }],
+          },
+          { kind: 'markdown', intermediate: false, text: 'Updated the spacing.' },
+        ],
+      },
+    });
+    assert.match(summary.id, /^st-/);
+    assert.equal(summary.promptPreview, 'Fix the poster spacing');
+    assert.equal(store.list().length, 1);
+
+    const loaded = store.get(summary.id);
+    assert.equal(loaded.turn.items[1].tools[0].name, 'view_file');
+    assert.equal(loaded.turn.items[1].tools[0].args.Path, 'poster.html');
+    assert.equal(loaded.turn.items[2].text, 'Updated the spacing.');
+    assert.equal(loaded.conversationTitle, 'Poster edits');
+
+    const again = new SavedTurnStore({ dir });
+    assert.equal(again.list()[0].id, summary.id);
+    assert.equal(again.delete(summary.id), true);
+    assert.equal(again.list().length, 0);
+    assert.equal(again.get(summary.id), null);
+    assert.throws(() => again.delete('../index'), /invalid saved turn id/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('native file picker chooses the OS dialog and hides a missing Linux tool', async () => {

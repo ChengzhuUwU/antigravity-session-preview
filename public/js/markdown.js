@@ -5,6 +5,9 @@
 // - CJK bold punctuation compatibility + KaTeX math + Obsidian/GitHub callouts + lazy Mermaid
 
 import { getLang, t } from './i18n.js';
+import { relayoutMarkdownTables, toggleCellFold } from './table-layout.js';
+
+export { relayoutMarkdownTables };
 
 const blockHtmlCache = new Map();
 let mermaidLoaderPromise = null;
@@ -1190,6 +1193,8 @@ export function enhanceMarkdownDom(container, theme = 'light') {
       }
     })().catch(() => {});
   }
+
+  relayoutMarkdownTables(container, { force: true });
 }
 
 export function downloadSvgElement(svgEl, filename = 'mermaid-diagram.svg') {
@@ -1267,6 +1272,11 @@ export function attachCodeCardInteractions(root, { onOpenLocalLink, onOpenConver
     if (!btn) return;
     const action = btn.dataset.action;
 
+    if (action === 'toggle-cell-fold') {
+      toggleCellFold(btn);
+      return;
+    }
+
     if (action === 'toggle-table-expand') {
       const tableCard = btn.closest('.table-card');
       if (!tableCard) return;
@@ -1282,6 +1292,7 @@ export function attachCodeCardInteractions(root, { onOpenLocalLink, onOpenConver
         const expanded = tableCard.classList.toggle('expanded');
         btn.textContent = expanded ? t('tableFitBtn') : t('tableExpandBtn');
       }
+      relayoutMarkdownTables(tableCard, { force: true });
       return;
     }
 

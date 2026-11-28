@@ -11,6 +11,7 @@ import {
   bindPanZoomViewport,
   downloadSvgElement,
   rethemeMermaidDiagrams,
+  relayoutMarkdownTables,
 } from './markdown.js';
 import {
   APPLE_SPINNER_SVG,
@@ -19,8 +20,9 @@ import {
   renderSpreadsheetViewer,
   renderPresentationViewer,
 } from './doc-viewers.js';
-import { TranscriptRenderer, appendLeadOutlineItem, formatCompactTokens, renderCliInsightsHtml } from './transcript-view.js';
+import { TranscriptRenderer, appendLeadOutlineItem, buildBtwSavedTurn, btwForkConversationId, formatCompactTokens, renderCliInsightsHtml } from './transcript-view.js';
 import { createSidebarOrder, noteSidebarRoster, sortGroupsBySidebarOrder } from './sidebar-order.js';
+import { folderShowsUnread, nextConversationReadState } from './read-state.js';
 
 const isSidecar = Boolean(window.sidecar && typeof window.sidecar.fetch === 'function');
 const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
@@ -276,6 +278,10 @@ const initialTypography = loadInitialTypography();
 const state = {
   mode: 'sessions', // 'sessions' | 'docs'
   flavor: localStorage.getItem('amp-flavor') || 'antigravity-cli',
+  availableFlavors: [],
+  sidebarSource: 'sessions', // 'sessions' | 'saved-turns'
+  savedTurns: [],
+  activeSavedTurnId: null,
   theme: initialThemeMode(), // 'light' | 'dark'
   palette: resolvedInitialPalette, // 8 presets | 'custom-<id>'
   customPalettes: initialCustomPalettes,
@@ -972,6 +978,11 @@ function applyAppearance({ rebuildMenu = true } = {}) {
   }
   transcriptRenderer?.setTheme(effectiveTheme);
   rethemeMermaidDiagrams(effectiveTheme);
+  const tableLayoutSig = `${state.tables}|${state.fontSize}|${state.width}|${state.prose}|${effectiveCjk}`;
+  if (tableLayoutSig !== state.tableLayoutSig) {
+    state.tableLayoutSig = tableLayoutSig;
+    relayoutMarkdownTables(document, { force: true });
+  }
 }
 
 function syncRgbControlsInPlace(nextHex) {
@@ -1036,6 +1047,7 @@ function applyLanguage(nextLang) {
     maxBtn.textContent = isMax ? t('mmdRestoreBtn') : t('mmdMaximizeBtn');
   }
   applyAppearance();
+  syncFlavorSelect();
   updatePinSessionButton();
   if (state.eventSource) {
     applyHookPhase(state.currentViewData?.hookState);
@@ -1167,17 +1179,31 @@ function renderToc(items) {
   ).join('');
 }
 
+function syncFlavorSelect() {
+  const select = el('flavor-select');
+  if (!select) return;
+  const flavors = state.availableFlavors.length ? state.availableFlavors : [state.flavor].filter(Boolean);
+  const options = flavors.map((f) => `<option value="${escapeHtml(f)}">${escapeHtml(f)}</option>`);
+  options.push(`<option value="__saved_turns__">${escapeHtml(t('savedTurnsOption'))}</option>`);
+  select.innerHTML = options.join('');
+  select.value = state.sidebarSource === 'saved-turns' ? '__saved_turns__' : state.flavor;
+}
+
 async function loadFlavors() {
   try {
     const res = await apiFetch('/api/flavors');
     if (!res.ok) return;
     const { flavors } = await res.json();
-    const select = el('flavor-select');
-    if (!select || !flavors?.length) return;
-    select.innerHTML = flavors.map((f) => `<option value="${escapeHtml(f)}">${escapeHtml(f)}</option>`).join('');
-    if (flavors.includes(state.flavor)) select.value = state.flavor;
-    else state.flavor = flavors[0];
+    if (!flavors?.length) return;
+    state.availableFlavors = flavors;
+    if (!flavors.includes(state.flavor)) state.flavor = flavors[0];
+    syncFlavorSelect();
   } catch {}
+}
+
+function syncSavedTurnsChrome() {
+  const saved = state.mode === 'sessions' && state.sidebarSource === 'saved-turns';
+  el('toggle-all-projects-btn')?.classList.toggle('hidden', saved);
 }
 
 function updatePinSessionButton() {
@@ -1247,47 +1273,67 @@ function reconcileSessionReadState(convs) {
   }
 
   let changed = false;
+  const now = Date.now();
   for (const c of convs) {
     if (!c?.id) continue;
-    const id = c.id;
-    const steps = c.stepCount || 0;
-    const running = isConvActivelyRunning(c);
-    const isViewedNow = state.mode === 'sessions' && state.activeConvId === id;
-
-    if (running) {
-      state.prevRunningIds.add(id);
-      if (state.unreadConvIds.delete(id)) changed = true;
-      continue;
-    }
-
-    const wasRunning = state.prevRunningIds.has(id);
-    if (wasRunning) state.prevRunningIds.delete(id);
-    const prevSeen = state.seenSessionSteps[id];
-
-    if (isViewedNow) {
-      if (state.unreadConvIds.delete(id)) changed = true;
-      if (prevSeen !== steps) {
-        state.seenSessionSteps[id] = steps;
-        changed = true;
-      }
-    } else {
-      const advancedSinceSeen = prevSeen !== undefined && steps > prevSeen;
-      const freshCompletedSession = prevSeen === undefined && steps > 0 && (Date.now() - (c.updatedAt || 0) < 5 * 60 * 1000);
-      if (wasRunning || advancedSinceSeen || freshCompletedSession) {
-        if (!state.unreadConvIds.has(id)) {
-          state.unreadConvIds.add(id);
-          changed = true;
-        }
-      }
-      if (prevSeen === undefined) {
-        state.seenSessionSteps[id] = steps;
-        changed = true;
-      }
-    }
+    if (applyConversationReadState(c, now)) changed = true;
   }
 
   if (changed) {
     saveSessionReadState();
+  }
+}
+
+function applyConversationReadState(c, now = Date.now()) {
+  const id = c.id;
+  const hadSeen = Object.prototype.hasOwnProperty.call(state.seenSessionSteps, id);
+  const next = nextConversationReadState({
+    steps: c.stepCount || 0,
+    running: isConvActivelyRunning(c),
+    viewed: state.mode === 'sessions' && state.activeConvId === id,
+    wasRunning: state.prevRunningIds.has(id),
+    prevSeen: hadSeen ? state.seenSessionSteps[id] : undefined,
+    wasUnread: state.unreadConvIds.has(id),
+    updatedAt: c.updatedAt || 0,
+    now,
+  });
+
+  if (next.trackRunning) state.prevRunningIds.add(id);
+  else state.prevRunningIds.delete(id);
+
+  let changed = false;
+  if (next.unread) {
+    if (!state.unreadConvIds.has(id)) {
+      state.unreadConvIds.add(id);
+      changed = true;
+    }
+  } else if (state.unreadConvIds.delete(id)) {
+    changed = true;
+  }
+  if (next.seen !== undefined && state.seenSessionSteps[id] !== next.seen) {
+    state.seenSessionSteps[id] = next.seen;
+    changed = true;
+  }
+  return changed;
+}
+
+function sessionIsUnreadHighlight(c) {
+  if (!c?.id) return false;
+  return folderShowsUnread([c], {
+    unreadIds: state.unreadConvIds,
+    runningIds: isConvActivelyRunning(c) ? [c.id] : [],
+    activeId: state.mode === 'sessions' ? (state.activeConvId || '') : '',
+    countableIds: [c.id],
+  });
+}
+
+function unreadStatusDotHtml() {
+  return `<span class="status-dot unread-completed" title="${escapeHtml(t('unreadBadge'))}"></span>`;
+}
+
+function acknowledgeOpenSession() {
+  if (state.mode === 'sessions' && state.activeConvId) {
+    markConversationAsRead(state.activeConvId);
   }
 }
 
@@ -1438,7 +1484,7 @@ function renderSessionButtonHtml(c, { showProjectPill = false } = {}) {
   const sub = c.isSubagent ? 'is-subagent' : '';
   const waitingDec = isConvWaitingDecision(c);
   const runningNow = !waitingDec && isConvActivelyRunning(c);
-  const isUnreadCompleted = !waitingDec && !runningNow && state.unreadConvIds.has(c.id);
+  const isUnreadCompleted = sessionIsUnreadHighlight(c);
   const itemStateCls = waitingDec
     ? 'is-waiting-decision'
     : (runningNow
@@ -1525,6 +1571,36 @@ function groupConversations(list) {
   return Array.from(groupsMap.values());
 }
 
+function renderSavedTurnsSidebar(container, query) {
+  syncSavedTurnsChrome();
+  const turns = state.savedTurns.filter((item) => {
+    if (!query) return true;
+    const hay = `${item.promptPreview || ''} ${item.conversationTitle || ''} ${item.projectName || ''} ${item.scheduleLabel || ''}`.toLowerCase();
+    return hay.includes(query);
+  });
+  if (turns.length === 0) {
+    container.innerHTML = `<div style="padding:16px 10px;font-size:0.78rem;color:var(--text-faint);">${escapeHtml(t('savedTurnsEmpty'))}</div>`;
+    return;
+  }
+  container.innerHTML = turns.map((item) => {
+    const active = item.id === state.activeSavedTurnId ? 'active' : '';
+    const title = item.promptPreview || item.scheduleLabel || t('savedTurnsEmptyTitle');
+    const from = item.conversationTitle || item.projectName || '';
+    const turnLabel = item.scheduleLabel || (item.turnIndex != null ? `#${item.turnIndex}` : '');
+    const metaLeft = [turnLabel, from].filter(Boolean).join(' · ');
+    return `<button type="button" class="session-item ${active}" data-saved-turn="${escapeHtml(item.id)}" title="${escapeHtml(title)}">
+      <div class="session-title-line">
+        <span class="session-title-text">${escapeHtml(title)}</span>
+        <span class="session-star-action saved-turn-remove" data-delete-saved-turn="${escapeHtml(item.id)}" title="${escapeHtml(t('removeSavedTurn'))}">×</span>
+      </div>
+      <div class="session-meta-line">
+        <span class="session-meta-left"><span>${escapeHtml(metaLeft)}</span></span>
+        <span>${escapeHtml(formatCompactDate(item.savedAt))}</span>
+      </div>
+    </button>`;
+  }).join('');
+}
+
 function renderSidebarList() {
   state.sidebarDirtyWhileHovered = false;
   if (bgSidebarRenderTimer) {
@@ -1596,6 +1672,12 @@ function renderSidebarList() {
     return;
   }
 
+  if (state.sidebarSource === 'saved-turns') {
+    renderSavedTurnsSidebar(container, query);
+    return;
+  }
+  syncSavedTurnsChrome();
+
   const filtered = state.conversations.filter((c) => {
     if (!query) return true;
     const proj = resolveProjectLabel(c).toLowerCase();
@@ -1624,7 +1706,7 @@ function renderSidebarList() {
   const pinnedOpen = query ? true : state.pinnedGroupOpen;
   const pinnedHasDecision = pinnedConvs.some(isConvWaitingDecision);
   const pinnedHasRunning = !pinnedHasDecision && pinnedConvs.some(isConvActivelyRunning);
-  const pinnedHasUnread = pinnedConvs.some((s) => !isConvActivelyRunning(s) && state.unreadConvIds.has(s.id));
+  const pinnedHasUnread = pinnedConvs.some(sessionIsUnreadHighlight);
   const pinnedStatusHtml = pinnedHasDecision
     ? `<span class="status-dot decision-waiting" title="${escapeHtml(t('waitingDecisionPhase'))}"></span>`
     : (pinnedHasRunning
@@ -1685,15 +1767,20 @@ function renderSidebarList() {
     const visibleRoots = showAllRoots ? rootAll : recentRoots;
     const hiddenRootCount = showAllRoots ? 0 : olderRoots.length;
 
+    const countable = [];
     const rowsHtml = visibleRoots.map((rootConv) => {
+      countable.push(rootConv);
       const childSubs = subsByParent.get(rootConv.id) || [];
       let subHtml = '';
       if (childSubs.length > 0) {
         const subGroupKey = `parent:${rootConv.id}`;
         const subExpanded = Boolean(query) || state.expandedSubagentGroups.has(subGroupKey) || childSubs.some((s) => s.id === state.activeConvId);
+        if (subExpanded) countable.push(...childSubs);
+        const subHasUnread = childSubs.some(sessionIsUnreadHighlight);
         const subUnit = childSubs.length === 1 ? t('subagentUnit') : t('subagentsUnit');
-        subHtml = `<button type="button" class="subagent-group-toggle" data-toggle-subagents="${escapeHtml(subGroupKey)}">
+        subHtml = `<button type="button" class="subagent-group-toggle${subHasUnread ? ' has-unread' : ''}" data-toggle-subagents="${escapeHtml(subGroupKey)}">
             <span>${subExpanded ? '▾' : '▸'} ${childSubs.length} ${escapeHtml(subUnit)}</span>
+            ${subHasUnread ? unreadStatusDotHtml() : ''}
           </button>
           ${subExpanded ? childSubs.map(renderSessionButtonHtml).join('') : ''}`;
       }
@@ -1704,22 +1791,31 @@ function renderSidebarList() {
     if (orphanSubs.length > 0) {
       const orphanKey = `orphan:${grp.key}`;
       const orphanOpen = Boolean(query) || state.expandedSubagentGroups.has(orphanKey) || orphanSubs.some((s) => s.id === state.activeConvId);
+      if (orphanOpen) countable.push(...orphanSubs);
+      const orphanHasUnread = orphanSubs.some(sessionIsUnreadHighlight);
       const orphanUnit = orphanSubs.length === 1 ? t('standaloneSubagentUnit') : t('standaloneSubagentsUnit');
-      orphanHtml = `<button type="button" class="subagent-group-toggle" data-toggle-subagents="${escapeHtml(orphanKey)}">
+      orphanHtml = `<button type="button" class="subagent-group-toggle${orphanHasUnread ? ' has-unread' : ''}" data-toggle-subagents="${escapeHtml(orphanKey)}">
           <span>${orphanOpen ? '▾' : '▸'} ${orphanSubs.length} ${escapeHtml(orphanUnit)}</span>
+          ${orphanHasUnread ? unreadStatusDotHtml() : ''}
         </button>
         ${orphanOpen ? orphanSubs.map(renderSessionButtonHtml).join('') : ''}`;
     }
 
+    const olderHasUnread = olderRoots.some(sessionIsUnreadHighlight);
     const olderBtnHtml = hiddenRootCount > 0
-      ? `<button type="button" class="show-older-sessions-btn" data-show-older-project="${escapeHtml(grp.key)}">${escapeHtml(t('olderSessionsBtn', { count: hiddenRootCount, unit: hiddenRootCount === 1 ? t('sessionUnit') : t('sessionsUnit') }))}</button>`
+      ? `<button type="button" class="show-older-sessions-btn${olderHasUnread ? ' has-unread' : ''}" data-show-older-project="${escapeHtml(grp.key)}">${olderHasUnread ? unreadStatusDotHtml() : ''}${escapeHtml(t('olderSessionsBtn', { count: hiddenRootCount, unit: hiddenRootCount === 1 ? t('sessionUnit') : t('sessionsUnit') }))}</button>`
       : '';
 
     const displayCount = rootAll.length || grp.items.length;
     const folderTooltip = grp.workspaceUri ? `${grp.label} (${grp.workspaceUri})` : grp.label;
     const groupHasDecision = grp.items.some(isConvWaitingDecision);
     const groupHasRunning = !groupHasDecision && grp.items.some(isConvActivelyRunning);
-    const groupHasUnread = grp.items.some((s) => !isConvActivelyRunning(s) && state.unreadConvIds.has(s.id));
+    const groupHasUnread = folderShowsUnread(countable, {
+      unreadIds: state.unreadConvIds,
+      runningIds: countable.filter(isConvActivelyRunning).map((s) => s.id),
+      activeId: state.mode === 'sessions' ? (state.activeConvId || '') : '',
+      countableIds: countable.map((s) => s.id),
+    });
     const groupRunningDot = groupHasDecision
       ? `<span class="status-dot decision-waiting" title="${escapeHtml(t('waitingDecisionPhase'))}"></span>`
       : (groupHasRunning
@@ -1749,7 +1845,8 @@ function renderSidebarList() {
   state.anyProjectOpen = anyOpen;
   const collapseBtn = el('toggle-all-projects-btn');
   if (collapseBtn) {
-    collapseBtn.textContent = anyOpen ? t('collapseProjectsBtn') : t('expandProjectsBtn');
+    const listExpanded = anyOpen || state.showOlderInProject.size > 0;
+    collapseBtn.textContent = listExpanded ? t('collapseProjectsBtn') : t('expandProjectsBtn');
   }
   const prevSidebarScroll = container.scrollTop;
   container.innerHTML = pinnedSectionHtml + projectsHtml;
@@ -2186,11 +2283,151 @@ async function revealInFolder(rawPath, baseDir = '', triggerBtn = null) {
   }
 }
 
+async function loadSavedTurns() {
+  try {
+    const res = await apiFetch('/api/saved-turns');
+    if (!res.ok) return;
+    const data = await res.json();
+    state.savedTurns = Array.isArray(data.turns) ? data.turns : [];
+  } catch {}
+  if (state.mode === 'sessions' && state.sidebarSource === 'saved-turns') renderSidebarList();
+}
+
+async function saveBtwInteraction(source = {}) {
+  const question = String(source.question || '').trim();
+  const noteId = String(source.noteId || '');
+  const notes = state.currentViewData?.cliInsights?.btwNotes || [];
+  const commands = state.currentViewData?.cliInsights?.btwCommands || [];
+  const note = notes.find((item) => noteId && item.id === noteId) || notes.find((item) => question && item.question === question);
+  const command = commands.find((item) => question && item.question === question);
+  const fallback = buildBtwSavedTurn({
+    question: question || note?.question || '',
+    answer: note?.answer || '',
+    noteId: note?.id || noteId,
+    toolCount: note?.toolCount ?? command?.toolCalls,
+    durationText: command?.durationText || '',
+    status: command?.status || '',
+    createdAt: note?.createdAt || command?.timestamp || Date.now(),
+  });
+  let turn = fallback;
+  const forkId = btwForkConversationId(note?.id || noteId);
+  if (forkId) {
+    try {
+      const res = await apiFetch(`/api/conversations/${encodeURIComponent(forkId)}/view?flavor=${encodeURIComponent(state.flavor)}`);
+      if (res.ok) {
+        const data = await res.json();
+        const turns = data.view?.turns || [];
+        const forkTurn = turns.find((item) => question && String(item.user?.request || '').includes(question)) || turns[turns.length - 1];
+        if (forkTurn) {
+          turn = JSON.parse(JSON.stringify(forkTurn));
+          turn.kind = 'btw';
+          turn.scheduleLabel = '/btw';
+          const hasFinal = (turn.items || []).some((item) => item.kind === 'markdown' && !item.intermediate && item.text);
+          if (!hasFinal && fallback.items[0]) turn.items = [...(turn.items || []), fallback.items[0]];
+          if (!turn.user?.request) turn.user = fallback.user;
+        }
+      }
+    } catch {}
+  }
+  return saveCurrentTurn(turn);
+}
+
+async function saveCurrentTurn(turn) {
+  if (!turn) return false;
+  let payloadTurn;
+  try {
+    payloadTurn = JSON.parse(JSON.stringify(turn));
+  } catch {
+    showToast(t('saveTurnFail'), true);
+    return false;
+  }
+  const meta = state.conversations.find((c) => c.id === state.activeConvId);
+  try {
+    const res = await apiFetch('/api/saved-turns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        conversationId: state.activeConvId || '',
+        flavor: state.flavor,
+        conversationTitle: meta?.title || el('doc-title')?.textContent || '',
+        projectName: meta ? resolveProjectLabel(meta) : '',
+        turn: payloadTurn,
+      }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const summary = await res.json();
+    state.savedTurns = [summary, ...state.savedTurns.filter((item) => item.id !== summary.id)];
+    showToast(t('savedTurnToast'));
+    return true;
+  } catch {
+    showToast(t('saveTurnFail'), true);
+    return false;
+  }
+}
+
+async function openSavedTurn(id) {
+  if (!id) return;
+  const reqId = ++state.navSeq;
+  state.mode = 'sessions';
+  state.sidebarSource = 'saved-turns';
+  state.activeSavedTurnId = id;
+  state.activeConvId = null;
+  syncFlavorSelect();
+  updateModeButtons();
+  updatePinSessionButton();
+  renderSidebarList();
+  try {
+    const res = await apiFetch(`/api/saved-turns/${encodeURIComponent(id)}`);
+    if (reqId !== state.navSeq || state.activeSavedTurnId !== id) return;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const record = await res.json();
+    if (reqId !== state.navSeq || state.activeSavedTurnId !== id) return;
+    const turn = record.turn;
+    el('doc-title').textContent = record.promptPreview || record.conversationTitle || t('savedTurnsEmptyTitle');
+    state.currentBaseDir = '';
+    transcriptRenderer.render(`saved:${record.id}`, {
+      turns: turn ? [turn] : [],
+      summary: {
+        totalTurns: 1,
+        totalSteps: turn?.items?.length || 0,
+        activeStatus: 'idle',
+        totalInputTokens: turn?.stats?.tokensIn || 0,
+        totalOutputTokens: turn?.stats?.tokensOut || 0,
+        totalCacheReadTokens: 0,
+      },
+    }, { baseDir: '' });
+    renderToc([]);
+  } catch (err) {
+    if (reqId !== state.navSeq || state.activeSavedTurnId !== id) return;
+    el('reader-column').innerHTML = `<div class="notice-banner error">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function deleteSavedTurn(id) {
+  if (!id) return;
+  try {
+    const res = await apiFetch(`/api/saved-turns/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!res.ok) return;
+  } catch {
+    return;
+  }
+  state.savedTurns = state.savedTurns.filter((item) => item.id !== id);
+  if (state.activeSavedTurnId === id) {
+    state.activeSavedTurnId = null;
+    el('doc-title').textContent = t('savedTurnsEmptyTitle');
+    el('reader-column').innerHTML = `<div class="empty-state"><strong>${escapeHtml(t('savedTurnsEmptyTitle'))}</strong><span>${escapeHtml(t('savedTurnsEmpty'))}</span></div>`;
+    renderToc([]);
+  }
+  renderSidebarList();
+}
+
 async function openConversation(convId, { scrollToLatestUser = true } = {}) {
   if (!convId) return;
+  state.activeSavedTurnId = null;
   const reqId = ++state.navSeq;
   const prevConvId = state.activeConvId;
   if (state.mode === 'sessions' && prevConvId && prevConvId !== convId) {
+    markConversationAsRead(prevConvId);
     stashConversationChrome(prevConvId);
   }
   state.mode = 'sessions';
@@ -2908,6 +3145,7 @@ function renderCustomPreview(doc) {
 
 function showEmptyDocsStage() {
   ++state.navSeq;
+  acknowledgeOpenSession();
   state.mode = 'docs';
   state.activePreviewId = null;
   state.currentCustomDoc = null;
@@ -2925,6 +3163,7 @@ function showEmptyDocsStage() {
 async function openCustomPreview(previewId, { preserveScroll = false } = {}) {
   if (!previewId) return;
   const reqId = ++state.navSeq;
+  acknowledgeOpenSession();
   state.mode = 'docs';
   state.activePreviewId = previewId;
   persistNavigationState({ mode: 'docs', previewId });
@@ -3726,12 +3965,15 @@ async function loadInitialWorkspaceContent() {
 async function bootstrap() {
   setLang(getLang());
   applyStaticI18n();
+  syncFlavorSelect();
   applyAppearance();
   const initManageBtn = el('docs-manage-btn');
   if (initManageBtn) initManageBtn.textContent = t('manageBtn');
 
   transcriptRenderer = new TranscriptRenderer(el('reader-column'), {
     theme: resolvedTheme(),
+    onSaveTurn: (turn) => saveCurrentTurn(turn),
+    onSaveBtwTurn: (source) => saveBtwInteraction(source),
     onLoadFullStep: async (stepIdx) => {
       if (!state.activeConvId) return null;
       const res = await apiFetch(`/api/conversations/${encodeURIComponent(state.activeConvId)}/steps/${stepIdx}?flavor=${encodeURIComponent(state.flavor)}`);
@@ -3859,10 +4101,11 @@ async function bootstrap() {
   });
 
   el('toggle-all-projects-btn')?.addEventListener('click', () => {
-    const shouldOpen = !state.anyProjectOpen;
+    const shouldOpen = !(state.anyProjectOpen || state.showOlderInProject.size > 0);
     for (const key of state.allProjectKeys) {
       state.projectExpanded.set(key, shouldOpen);
     }
+    if (!shouldOpen) state.showOlderInProject.clear();
     renderSidebarList();
   });
 
@@ -3931,8 +4174,17 @@ async function bootstrap() {
   });
 
   el('flavor-select')?.addEventListener('change', (e) => {
-    state.flavor = e.target.value;
+    const value = e.target.value;
+    if (value === '__saved_turns__') {
+      state.sidebarSource = 'saved-turns';
+      syncFlavorSelect();
+      loadSavedTurns();
+      return;
+    }
+    state.sidebarSource = 'sessions';
+    state.flavor = value;
     localStorage.setItem('amp-flavor', state.flavor);
+    syncFlavorSelect();
     loadConversations();
   });
 
@@ -4161,6 +4413,20 @@ async function bootstrap() {
       return;
     }
 
+    const deleteSaved = e.target.closest('[data-delete-saved-turn]');
+    if (deleteSaved) {
+      e.preventDefault();
+      e.stopPropagation();
+      deleteSavedTurn(deleteSaved.dataset.deleteSavedTurn);
+      return;
+    }
+
+    const savedBtn = e.target.closest('[data-saved-turn]');
+    if (savedBtn) {
+      openSavedTurn(savedBtn.dataset.savedTurn);
+      return;
+    }
+
     const convBtn = e.target.closest('[data-conv-id]');
     if (convBtn) {
       openConversation(convBtn.dataset.convId);
@@ -4298,6 +4564,22 @@ async function bootstrap() {
     if (e.target.closest('[data-close-cli-drawer]')) {
       state.activeCliToolTab = null;
       renderCliToolsDrawer();
+      return;
+    }
+    const saveBtw = e.target.closest('[data-action="save-btw-turn"]');
+    if (saveBtw) {
+      const ok = await saveBtwInteraction({
+        question: saveBtw.dataset.btwQuestion || '',
+        noteId: saveBtw.dataset.btwNoteId || '',
+      });
+      if (ok) {
+        saveBtw.dataset.busy = '1';
+        saveBtw.textContent = t('savedTurnBtn');
+        setTimeout(() => {
+          delete saveBtw.dataset.busy;
+          if (saveBtw.isConnected) saveBtw.textContent = t('saveTurnBtn');
+        }, 1400);
+      }
       return;
     }
     const prefillBtw = e.target.closest('[data-action="prefill-btw-question"]');

@@ -19,6 +19,7 @@ import { CustomPreviewStore } from './custom-preview.mjs';
 import { PreviewAuthManager } from './auth.mjs';
 import { convertOfficeFileToPdfCached, resolveCachedOfficePdfByName } from './office-convert.mjs';
 import { resolveNativeFilePicker, runNativeFilePicker } from './file-picker.mjs';
+import { SavedTurnStore } from './saved-turns.mjs';
 
 const HERE = resolve(fileURLToPath(import.meta.url), '..');
 const PUBLIC_DIR = resolve(HERE, '..', 'public');
@@ -562,6 +563,9 @@ export function createPreviewEngine({
   const btwNotesPath = customStore.persistPath ? join(dirname(customStore.persistPath), 'btw-notes.json') : '';
   const pinnedSessionsPath = customStore.persistPath ? join(dirname(customStore.persistPath), 'pinned-sessions.json') : '';
   const customPalettesPath = customStore.persistPath ? join(dirname(customStore.persistPath), 'custom-palettes.json') : '';
+  const savedTurns = new SavedTurnStore({
+    dir: customStore.persistPath ? join(dirname(customStore.persistPath), 'saved-turns') : '',
+  });
   const btwNotesByConv = new Map();
   let btwNotesMtimeMs = 0;
   let pinnedSessionIds = [];
@@ -1086,6 +1090,40 @@ export function createPreviewEngine({
           return sendJson(res, 400, { error: err.message });
         }
       }
+    }
+
+    if (pathname === '/api/saved-turns' || pathname.startsWith('/api/saved-turns/')) {
+      const savedId = pathname === '/api/saved-turns' ? '' : decodeURIComponent(pathname.slice('/api/saved-turns/'.length));
+      if (req.method === 'GET' && !savedId) {
+        return sendJson(res, 200, { turns: savedTurns.list() });
+      }
+      if (req.method === 'GET' && savedId) {
+        try {
+          const record = savedTurns.get(savedId);
+          if (!record) return sendJson(res, 404, { error: 'Saved turn not found' });
+          return sendJson(res, 200, record);
+        } catch (err) {
+          return sendJson(res, 400, { error: err.message });
+        }
+      }
+      if (req.method === 'POST' && !savedId) {
+        try {
+          const body = await readJsonBody(req);
+          const summary = savedTurns.create(body);
+          return sendJson(res, 200, summary);
+        } catch (err) {
+          return sendJson(res, 400, { error: err.message });
+        }
+      }
+      if (req.method === 'DELETE' && savedId) {
+        try {
+          savedTurns.delete(savedId);
+          return sendJson(res, 200, { ok: true });
+        } catch (err) {
+          return sendJson(res, 400, { error: err.message });
+        }
+      }
+      return sendJson(res, 405, { error: 'Method not allowed' });
     }
 
     if (pathname === '/api/custom-palettes') {

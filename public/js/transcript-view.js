@@ -55,6 +55,51 @@ export function formatPromptPlainText(turn) {
   return String(turn?.user?.request || '').trim();
 }
 
+/** A /btw side question stored in the same shape as a saved conversation turn. */
+export function buildBtwSavedTurn({ question, answer, noteId, toolCount, durationText, status, createdAt } = {}) {
+  const items = [];
+  const answerText = String(answer || '').trim();
+  if (answerText) {
+    items.push({
+      kind: 'markdown',
+      id: 'btw-answer',
+      intermediate: false,
+      text: answerText,
+    });
+  }
+  return {
+    id: noteId || 'btw-saved',
+    index: null,
+    kind: 'btw',
+    scheduleLabel: '/btw',
+    createdAt: createdAt || new Date().toISOString(),
+    user: {
+      request: String(question || '/btw'),
+      mentions: [],
+      metadataBlocks: [],
+    },
+    items,
+    stats: {
+      thinkingCount: 0,
+      toolCount: Number(toolCount) || 0,
+      errorCount: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+    },
+    btw: {
+      noteId: noteId || '',
+      toolCount: Number(toolCount) || 0,
+      durationText: durationText || '',
+      status: status || '',
+    },
+  };
+}
+
+export function btwForkConversationId(noteId) {
+  const match = String(noteId || '').match(/^btw-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+  return match ? match[1] : '';
+}
+
 export function formatResponsePlainText(turn) {
   return collectModelPlainParts(turn).join('\n\n');
 }
@@ -117,6 +162,7 @@ function turnBadgeText(turn) {
 
 function rememberTurnCopy(turnEl, turn) {
   if (!turnEl) return;
+  turnEl._savedTurn = turn;
   turnEl._copyPromptText = formatPromptPlainText(turn);
   turnEl._copyResponseText = formatResponsePlainText(turn);
   const card = turnEl.querySelector(':scope > .user-card');
@@ -825,6 +871,7 @@ function buildTurnElement(turn, { theme, baseDir, expandedState, isTurnRunning, 
       <div class="user-card-header">
         <span class="user-badge">${escapeHtml(turnBadgeText(turn))}</span>
         <span class="user-card-tools">
+          <button type="button" class="code-mini-btn" data-action="save-turn" title="${escapeHtml(t('saveTurnTip'))}">${escapeHtml(t('saveTurnBtn'))}</button>
           <button type="button" class="code-mini-btn" data-action="copy-prompt" title="${escapeHtml(t('copyPromptTip'))}" ${promptText.trim() ? '' : 'hidden'}>${escapeHtml(t('copyPromptBtn'))}</button>
           <button type="button" class="code-mini-btn" data-action="copy-response" title="${escapeHtml(t('copyResponseTip'))}" hidden>${escapeHtml(t('copyResponseBtn'))}</button>
           <span class="user-card-time">${escapeHtml(timeStr)}</span>
@@ -1364,6 +1411,7 @@ export function renderCliInsightsHtml(tab, view, cliInsights, artifacts, baseDir
         </div>
         <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
           ${metaBadges.join('')}
+          <button type="button" class="code-mini-btn" data-action="save-btw-turn" data-btw-question="${escapeHtml(c.question)}" data-btw-note-id="${escapeHtml(matchedNote?.id || '')}" title="${escapeHtml(t('saveBtwTip'))}">${escapeHtml(t('saveTurnBtn'))}</button>
           ${!matchedNote ? `<button type="button" class="code-mini-btn" data-action="prefill-btw-question" data-question="${escapeHtml(c.question)}">${escapeHtml(t('btwAttachBtn'))}</button>` : `<button type="button" class="code-mini-btn" data-action="delete-btw-note" data-note-id="${escapeHtml(matchedNote.id)}">✕</button>`}
         </div>
       </div>
@@ -1381,6 +1429,7 @@ export function renderCliInsightsHtml(tab, view, cliInsights, artifacts, baseDir
           <span class="tool-name-pill" style="color:var(--accent);border-color:var(--accent-border);background:var(--accent-soft);">/btw</span>
           <strong style="font-size:0.85rem;">${escapeHtml(n.question || 'Saved Side Answer')}</strong>
         </div>
+        <button type="button" class="code-mini-btn" data-action="save-btw-turn" data-btw-question="${escapeHtml(n.question || '')}" data-btw-note-id="${escapeHtml(n.id)}" title="${escapeHtml(t('saveBtwTip'))}">${escapeHtml(t('saveTurnBtn'))}</button>
         <button type="button" class="code-mini-btn" data-action="delete-btw-note" data-note-id="${escapeHtml(n.id)}">✕</button>
       </div>
       <div class="assistant-markdown" style="font-size:0.88rem;padding-top:8px;border-top:1px solid var(--border);">${renderMarkdownHtml(n.answer, { baseDir })}</div>
@@ -1403,12 +1452,14 @@ export function renderCliInsightsHtml(tab, view, cliInsights, artifacts, baseDir
 }
 
 export class TranscriptRenderer {
-  constructor(container, { theme = 'light', onLoadFullStep, onTocChanged, onSaveBtwNote, onDeleteBtwNote, onStreamTick } = {}) {
+  constructor(container, { theme = 'light', onLoadFullStep, onTocChanged, onSaveTurn, onSaveBtwTurn, onSaveBtwNote, onDeleteBtwNote, onStreamTick } = {}) {
     this.container = container;
     this.theme = theme;
     this.baseDir = '';
     this.onLoadFullStep = onLoadFullStep;
     this.onTocChanged = onTocChanged;
+    this.onSaveTurn = onSaveTurn || null;
+    this.onSaveBtwTurn = onSaveBtwTurn || null;
     this.onSaveBtwNote = onSaveBtwNote;
     this.onDeleteBtwNote = onDeleteBtwNote;
     this.onStreamTick = onStreamTick || null;
@@ -1448,6 +1499,27 @@ export class TranscriptRenderer {
     this.container.addEventListener('click', async (e) => {
       if (e.target.closest('[data-local-href], [data-open-conv]')) {
         return; // Handled by attachCodeCardInteractions
+      }
+
+      const saveBtn = e.target.closest('[data-action="save-turn"]');
+      if (saveBtn) {
+        const turnEl = saveBtn.closest('.turn-block');
+        const turn = turnEl?._savedTurn
+          || this.lastView?.turns?.find((item) => item.id === turnEl?.dataset.turnId);
+        if (!turn || typeof this.onSaveTurn !== 'function') return;
+        saveBtn.dataset.busy = '1';
+        saveBtn.textContent = t('savingTurnBtn');
+        try {
+          const ok = await this.onSaveTurn(turn);
+          saveBtn.textContent = ok ? t('savedTurnBtn') : t('saveTurnBtn');
+        } catch {
+          saveBtn.textContent = t('saveTurnBtn');
+        }
+        setTimeout(() => {
+          delete saveBtn.dataset.busy;
+          if (saveBtn.isConnected) saveBtn.textContent = t('saveTurnBtn');
+        }, 1400);
+        return;
       }
 
       const copyBtn = e.target.closest('[data-action="copy-prompt"], [data-action="copy-response"]');
@@ -1498,6 +1570,21 @@ export class TranscriptRenderer {
       if (e.target.closest('[data-action="close-cli-insights"]')) {
         this.activeCliTab = null;
         this._rerenderCurrent();
+        return;
+      }
+
+      const saveBtw = e.target.closest('[data-action="save-btw-turn"]');
+      if (saveBtw && this.onSaveBtwTurn) {
+        const ok = await this.onSaveBtwTurn({
+          question: saveBtw.dataset.btwQuestion || '',
+          noteId: saveBtw.dataset.btwNoteId || '',
+        });
+        if (ok) {
+          saveBtw.textContent = t('savedTurnBtn');
+          setTimeout(() => {
+            if (saveBtw.isConnected) saveBtw.textContent = t('saveTurnBtn');
+          }, 1400);
+        }
         return;
       }
 
